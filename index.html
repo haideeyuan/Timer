@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="大可爱计时器">
+    <title>大可爱计时器</title>
+    <style>
+        /* 极简 UI 还原 Swift 界面 */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: space-between; height: 100vh; margin: 0; background-color: #ffffff; padding: 10vh 0; box-sizing: border-box; touch-action: manipulation; }
+        h1 { font-size: 2.2rem; font-weight: bold; margin: 0; }
+        #statusMessage { font-size: 1.8rem; font-weight: 600; color: #000; }
+        .red-text { color: #ff3b30 !important; }
+        .input-group { width: 80%; max-width: 300px; display: flex; flex-direction: column; gap: 10px; }
+        label { font-size: 1.1rem; font-weight: bold; }
+        input { font-size: 1.2rem; padding: 10px; border: 1px solid #ccc; border-radius: 8px; outline: none; }
+        input:disabled { background-color: #f2f2f2; color: #999; }
+        button { width: 220px; height: 60px; font-size: 1.4rem; font-weight: bold; color: white; border: none; border-radius: 15px; cursor: pointer; transition: background-color 0.2s; }
+        .btn-start { background-color: #007aff; }
+        .btn-stop { background-color: #ff9500; }
+        .btn-close { background-color: #ff3b30; }
+        .middle-section { display: flex; flex-direction: column; gap: 30px; width: 100%; align-items: center; }
+    </style>
+</head>
+<body>
+
+    <h1>大可爱计时器</h1>
+    <div id="statusMessage">准备就绪</div>
+
+    <div class="middle-section">
+        <div class="input-group">
+            <label>总时长 (分钟, 支持0.5):</label>
+            <input type="number" id="totalInput" step="0.5" inputmode="decimal" placeholder="请输入数字">
+        </div>
+
+        <div class="input-group">
+            <label>提醒间隔 (分钟, 支持0.5):</label>
+            <input type="number" id="intervalInput" step="0.5" inputmode="decimal" placeholder="请输入数字">
+        </div>
+    </div>
+
+    <button id="mainBtn" class="btn-start">开始计时</button>
+
+    <script>
+        // MARK: - 计时器核心逻辑层
+        const totalInput = document.getElementById('totalInput');
+        const intervalInput = document.getElementById('intervalInput');
+        const statusMessage = document.getElementById('statusMessage');
+        const mainBtn = document.getElementById('mainBtn');
+
+        let isRunning = false;
+        let isAlarming = false;
+        let totalSeconds = 0;
+        let intervalSeconds = 0;
+        
+        // 绝对时间戳锚点
+        let startTime = null;
+        let timerInterval = null;
+        let triggeredIntervals = new Set(); // 记录已播报批次
+
+        mainBtn.addEventListener('click', () => {
+            if (!isRunning) {
+                startTimer();
+            } else {
+                stopOrReset();
+            }
+        });
+
+        function startTimer() {
+            const total = parseFloat(totalInput.value);
+            const interval = parseFloat(intervalInput.value);
+
+            if (isNaN(total) || total <= 0 || isNaN(interval) || interval <= 0) {
+                statusMessage.textContent = "请输入有效的时间（支持小数）";
+                return;
+            }
+
+            totalSeconds = total * 60;
+            intervalSeconds = interval * 60;
+            startTime = Date.now();
+            triggeredIntervals.clear();
+            
+            isRunning = true;
+            isAlarming = false;
+            
+            updateUIState();
+            statusMessage.textContent = "计时中...";
+            
+            // 动态读取外部输入变量打印日志
+            console.log(`\n[1] 计时器全局视角 (设定与调度 - 处理总时长: ${total} 分钟 | 提醒间隔: ${interval} 分钟)`);
+
+            // 唤醒 iOS 语音引擎准备 (需要用户物理点击事件触发)
+            let initUtterance = new SpeechSynthesisUtterance('');
+            window.speechSynthesis.speak(initUtterance);
+
+            // 前台高频刷新调度器，基于绝对时间戳
+            timerInterval = setInterval(tick, 100);
+        }
+
+        function tick() {
+            if (!startTime) return;
+
+            // 获取绝对流逝时间 (秒)，无惧 iOS 后台挂起
+            const elapsed = (Date.now() - startTime) / 1000;
+            const remaining = Math.max(totalSeconds - elapsed, 0);
+
+            const minutesLeft = Math.floor(remaining / 60);
+            const secondsLeft = Math.floor(remaining % 60);
+            
+            // 格式化时间显示
+            const minStr = String(minutesLeft).padStart(2, '0');
+            const secStr = String(secondsLeft).padStart(2, '0');
+            statusMessage.textContent = `剩余 ${minStr}:${secStr}`;
+
+            // 间隔时间到达时的语音提醒逻辑
+            if (elapsed > 0 && elapsed < totalSeconds) {
+                const currentIntervalCount = Math.floor(elapsed / intervalSeconds);
+                if (currentIntervalCount > 0 && !triggeredIntervals.has(currentIntervalCount)) {
+                    triggeredIntervals.add(currentIntervalCount);
+                    
+                    const totalElapsedSecs = currentIntervalCount * intervalSeconds;
+                    const m = Math.floor(totalElapsedSecs / 60);
+                    const s = Math.floor(totalElapsedSecs % 60);
+                    
+                    let timeString = "";
+                    if (m > 0) timeString += `${m}分钟`;
+                    if (s > 0) timeString += `${s}秒`;
+                    
+                    const speakText = `已经过去${timeString}`;
+                    console.log(`\n[2] 前台提醒模块 (触发间隔提醒 - 批次: ${currentIntervalCount} | 内容: ${speakText})`);
+                    
+                    speak(speakText);
+                }
+            }
+
+            if (elapsed >= totalSeconds) {
+                finishTimer();
+            }
+        }
+
+        function finishTimer() {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            isAlarming = true;
+            
+            statusMessage.textContent = "计时结束！";
+            console.log(`\n[3] 计时生命周期 (完成 - 触发终止语音)`);
+            
+            updateUIState();
+            speak("计时结束");
+        }
+
+        function stopOrReset() {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            window.speechSynthesis.cancel();
+            
+            isRunning = false;
+            isAlarming = false;
+            startTime = null;
+            
+            statusMessage.textContent = "已停止";
+            console.log(`\n[4] 资源释放 (强行停止 - 销毁 Timer 调度与语音引擎)`);
+            updateUIState();
+        }
+
+        function speak(text) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'zh-CN';
+            // 提高在某些设备上的音量穿透力
+            utterance.volume = 1.0; 
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function updateUIState() {
+            totalInput.disabled = isRunning;
+            intervalInput.disabled = isRunning;
+
+            if (!isRunning) {
+                mainBtn.textContent = "开始计时";
+                mainBtn.className = "btn-start";
+                statusMessage.classList.remove('red-text');
+            } else {
+                if (isAlarming) {
+                    mainBtn.textContent = "关闭提醒";
+                    mainBtn.className = "btn-close";
+                    statusMessage.classList.add('red-text');
+                } else {
+                    mainBtn.textContent = "停止计时";
+                    mainBtn.className = "btn-stop";
+                    statusMessage.classList.remove('red-text');
+                }
+            }
+        }
+    </script>
+</body>
+</html>
